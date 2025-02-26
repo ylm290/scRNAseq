@@ -1,0 +1,913 @@
+---
+title: "Omics Course Topic5 scRNA-seq basics"
+author: "Youkyung Lim"
+date: "`r Sys.Date()`"
+output: 
+  rmdformats::readthedown:
+    self_contained: true
+    thumbnails: false
+    lightbox: true
+    html_document:
+    code_folding: show
+---
+
+## Set up
+### Install R packages and load the libraries
+```{r message=FALSE}
+## Install Pacman and BiocManager if not installed
+if (!require("BiocManager", quietly = TRUE))
+  install.packages("BiocManager", version = "3.18")
+if ( !require("pacman", character.only = TRUE)) {
+  install.packages("pacman", dependencies = TRUE, quiet = TRUE) }
+
+## Load and install libraries and their dependencies using pacman
+pacman::p_load("dplyr", "ggplot2", "ggpubr", "purrr", "reshape2", "readr", "Seurat", "patchwork", "Azimuth", "multtest", "metap", "here") 
+# BiocManager::install("BSgenome.Hsapiens.UCSC.hg38")
+# remotes::install_github('satijalab/azimuth', ref = 'master')
+
+'%notin%' <- Negate('%in%')
+```
+
+### Import datasets and create Seurat objects 
+For this demo, we will use the 19 human PBMC (peripheral blood mononuclear cells) data sets with high and low HBsAG (Hepatitis B surface antigen) levels from the NUC (Nucleos(t)ide analogues i.e., tenofovir or entecavir) treated chronic HBV (hepatitis B virus) patients, from the following paper.
+
+> Beudeker, B. J. B., Osmani, Z., van Oord, G. W., Groothuismink, Z. M. A., de Knegt, R. J., Hoogenboezem, R. M., Bindels, E. M. J., van de Werken, H. J. G., & Boonstra, A. (2023). Association of HBsAg levels with differential gene expression in NK, CD8 T, and memory B cells in treated patients with chronic HBV. JHEP reports : innovation in hepatology, 6(2), 100980. https://doi.org/10.1016/j.jhepr.2023.100980
+
+We will load the count matrices, cell barcodes, and gene names (i.e. [the output of Cell Ranger pipeline](https://www.10xgenomics.com/support/software/cell-ranger/latest/analysis/outputs/cr-outputs-mex-matrices)) downloaded from [GEO accession number GSE247322](https://www.ncbi.nlm.nih.gov/geo/query/acc.cgi?acc=GSE247322). 
+
+[Seurat](https://satijalab.org/seurat/) is an R package designed for QC, analysis, and exploration of single-cell RNA-seq data. Seurat aims to enable users to identify and interpret sources of heterogeneity from single-cell transcriptomic measurements, and to integrate diverse types of single-cell data. 
+
+```{r}
+## Set working directory to be where the R project file is (Personal Device)
+wdir = here::here() 
+ddir = paste0(wdir, "/ExtData")
+# odir = paste0(wdir, "/Result_Topic5")
+
+## Set the working directory to be where the Rmd file is (Posit Cloud)
+# setwd(dirname(rstudioapi::getSourceEditorContext()$path))
+# wdir = getwd() 
+# ddir = paste0(wdir, "/Data")
+# odir = paste0(wdir, "/Result_Topic5")
+
+## Create Data and Result folders under the working directory
+# ifelse(!dir.exists(ddir), dir.create(ddir), FALSE)
+ifelse(!dir.exists(odir), dir.create(odir), FALSE)
+
+## List of sample IDs
+samples_id = c("GSM7887137_PBMC1", "GSM7887138_PBMC3", "GSM7887139_PBMC4", "GSM7887140_PBMC5", "GSM7887141_PBMC6", "GSM7887142_PBMC7", "GSM7887143_PBMC8", "GSM7887144_PBMC9", "GSM7887145_PBMC10", "GSM7887146_HBV_X210", "GSM7887147_HBV_X610", "GSM7887148_HBV_X670", "GSM7887149_HBV_X680", "GSM7887150_HBV_X726", "GSM7887151_HBV_X842", "GSM7887152_HBV_X846", "GSM7887153_HBV_X861", "GSM7887154_HBV_X980", "GSM7887155_HBV_X983")
+
+## List of HBsAg levels
+HBsAg.level = c("High", "Low", "High", "High", "Low", "Low", "High", "Low", "High", "High","High", "Low", "High", "Low", "Low", "High", "High", "Low", "Low")
+
+## Assign the HBsAg levels as names of the sample IDs
+names(samples_id) = HBsAg.level
+```
+
+Load the 19 samples' files which is saved in RDS format. Reading in the matrices and turning them into Seurat objects are done for you since it takes some time (just like a cooking show). 
+```{r warning=FALSE}
+#### DO NOT RUN #### 
+
+# ## Create a list of matrices
+# samples_data = list()
+# for (x in 1:length(samples_id)){
+#   barcode.path = paste0(wdir, "/GSE247322_RAW/", samples_id[x], "_", "barcodes.tsv.gz")
+#   features.path = paste0(wdir,"/GSE247322_RAW/",  samples_id[x], "_", "features.tsv.gz")
+#   matrix.path = paste0(wdir, "/GSE247322_RAW/", samples_id[x], "_", "matrix.mtx.gz")
+# 
+#   mat = Seurat::ReadMtx(mtx = matrix.path,
+#                         cells = barcode.path,
+#                         features = features.path,
+#                         cell.column = 1,
+#                         feature.column = 2) # 1 = Ensemble IDs, 2 = gene names
+#   samples_data[[x]] <- mat
+# }
+# 
+# ## Convert the matrices into SeuratObjects
+# samples_data <- lapply(samples_data, CreateSeuratObject,
+#                        min.features = 200, project = "EMC_HBsAG")
+# names(samples_data) <- samples_id
+# 
+# ## Save the Seurat object
+# saveRDS(samples_data, file = paste0(ddir, "/samples_data.rds"))
+```
+
+```{r}
+## Load the list of 19 Seurat objects
+samples_data <- readRDS(file = paste0(ddir, "/samples_data.rds"))
+```
+
+#### Do you remember the structure of the Seurat Object? What do `features` and `samples` in the active RNA assay mean? What does the `counts` layer contain?
+```{r}
+## Check the first two element of the list
+samples_data[1:2]
+```
+
+### Remove GSM7887146_HBV_X210 (PBMC11)
+One sample, PBMC11 (GSM7887146_HBV_X210), does not meet the inclusion criteria according to the original paper. We remove this sample from the beginning of the analysis whereas the original paper included it in the quality control and clustering steps, and subsequently removed from the rest of the analysis.
+
+> "Since our study intended to study patients on long-term NUC treatment, one blood sample from a patient that only received NUC treatment for a period of 3 months was included in the clustering (PBMC11) but subsequently removed from further downstream analysis."
+
+```{r}
+## Remove the sample from the list of Seurat objects
+samples_data$GSM7887146_HBV_X210 <- NULL
+
+## Check the number of remaining samples
+length(samples_data)
+
+## Remove the sample from the list of sample IDs as well
+samples_id <- samples_id[samples_id %notin% "GSM7887146_HBV_X210"]
+```
+
+### Select two samples from each condition
+Due to the limitation in computing power, we choose 2 samples from each condition. When all 18 samples were run on the CBBI server, 40GB of memory was required.
+```{r}
+## Select the sample IDs with HBsAg high condition
+samples_high <- samples_id[names(samples_id) == "High"]
+samples_high
+
+## Randomly select 2 sample IDs from the samples with HBsAg high condition
+## Set seed to select the same element everytime we run the code
+samples_high <- {set.seed(20240417); sample(samples_high, 2)}
+samples_high
+```
+
+```{r}
+## Do the same for the sample IDs with HBsAg low condition
+samples_low <- samples_id[names(samples_id) == "Low"]
+samples_low <- {set.seed(20240417); sample(samples_low, 2)}
+
+## Combine the IDs into a list of 4 sample IDs
+samples_chosen <- c( samples_high, samples_low )
+
+## Select the Seurat objects with the matching IDs
+samples_data <- samples_data[samples_chosen]
+```
+
+#### How many samples do we have now? Did we correctly select two samples from HBsAg high condition and the other two from HBsAg low condition?
+```{r}
+samples_data
+```
+
+### Merge into a single Seurat Object
+`samples_data` is a list that contains four Seurat objects as its elements. Now we are going to merge the four objects into one single object. To keep the name of each dataset, we will insert the names to `@meta.data` before we merge the objects. 
+```{r}
+## Add Sample IDs to the meta data
+samples_data <- lapply(seq_along(samples_data), function(y, n, i) { y[[i]] <- Seurat::AddMetaData(y[[i]], metadata = n[[i]], col.name = "Sample")}, y = samples_data, n = names(samples_data))
+```
+
+#### Take a look at the metadata of the first sample. What are the `rownames` of the data frame? Do you see `Sample` column with the first sample's ID, in addition to  `orig.ident`, `nCount_RNA` and `nFeature`? 
+```{r}
+head(samples_data[[1]]@meta.data)
+```
+
+We add sample IDs to cell barcodes (CBs) as prefixes in order to distinguish which cells belong to which sample when merged into a big matrix.
+```{r}
+## Add prefix to cell IDs prior to merging them
+samples_data <- lapply(1:length(x = samples_data), function(x) {
+  samples_data[[x]] <- Seurat::RenameCells(object = samples_data[[x]], add.cell.id = samples_id[x])
+})
+
+head(samples_data[[1]]@meta.data)
+```
+
+```{r}
+## We lost the names of elements in the list while adding the prefixes
+samples_data[1]
+
+## Add back Sampled IDs as names of the elements in the list
+samples_id <- samples_chosen
+names(samples_data) <- samples_id
+samples_data[1]
+```
+
+Now finally we merge the four into a single Seurat object. 
+```{r}
+## Merge the elements into a single Seurat object
+PBMC.HBsAG <- purrr::reduce(.x = samples_data, .f = function(x, y) {
+  merge(x = x, y = y, merge.data = TRUE)
+})
+PBMC.HBsAG
+```
+
+```{r}
+## Make layer names distinguishable by joining all layers and splitting back by their Sample IDs
+PBMC.HBsAG[['RNA']] <- SeuratObject::JoinLayers(object = PBMC.HBsAG[['RNA']])
+PBMC.HBsAG[['RNA']] <- split(x = PBMC.HBsAG[['RNA']], f = PBMC.HBsAG$Sample)
+```
+
+#### How many `layers` are there in the merged Seurat object? What are the names of the layers?
+```{r}
+## Check the data
+PBMC.HBsAG
+# head(PBMC.HBsAG@meta.data)
+```
+
+### Add cell-level metadata
+Calculate the percentage of all the counts belonging to a subset of the possible features for each cell. This is useful when trying to compute the percentage of transcripts that map to mitochondrial genes starting with MT-, for example. The calculation here is simply the column sum of the matrix present in the counts slot for features belonging to the set divided by the column sum for all features times 100.
+```{r}
+## Compute the percentage of transcripts that map to mitochondrial genes & ribosomal genes
+PBMC.HBsAG[["percent.mt"]] <- Seurat::PercentageFeatureSet(PBMC.HBsAG, pattern = "^MT-")
+PBMC.HBsAG[["percent.rb"]] <- Seurat::PercentageFeatureSet(PBMC.HBsAG,  "^RP[SL]")
+
+## Check the data
+head(PBMC.HBsAG@meta.data)
+```
+
+We also want to add the condition of each sample (i.e., HBsAg level high or low) to the metadata
+```{r}
+## Create a look-up table with Sample IDs and their corresponding condition
+lookup.table <- data.frame(Sample = samples_id, HBsAg = names(samples_id))
+lookup.table
+
+## Assign the condition to the `@meta.data` data frame
+PBMC.HBsAG@meta.data <- PBMC.HBsAG@meta.data %>% dplyr::mutate(Cell = rownames(.)) %>% 
+  dplyr::left_join(lookup.table, by="Sample") %>% tibble::column_to_rownames(var="Cell")
+
+## Check the data
+head(PBMC.HBsAG@meta.data)
+```
+
+## Quality Control
+What each column name in the metadata means: \
+ * nFeature_RNA: the number of genes detected per cell. \
+ * nCount_RNA: the total number of molecules (UMI) detected per cell. \
+ * percent.mt: the percentage of mitochondrial genes starting with MT-. \
+ * percent.rb: the percentage of ribosomal genes starting with RPS or RPL. \
+
+We are going to use the same criteria from the original paper for our quality control step.
+> "Low-quality cells or empty droplets were filtered by removing cells with < 600 features and > 20% of reads mapped to the mitochondrial genome. Cell doublets or multiplets were removed by excluding cells with > 4,000 features."
+
+### Original data
+#### Let's first check the QC metrics in the raw count matrix. Do the four samples have relatively similar `nFeature_RNA` and `nCount_RNA`? If not, why do you think it is? Examine `percent.mt` plot as well. 
+GSM7887145	HBsAg high group PBMC10
+GSM7887148	HBsAg low group HBV_X670 (PBMC13)
+GSM7887149	HBsAg high group HBV_X680 (PBMC14)
+GSM7887151	HBsAg low group HBV_X842 (PBMC16)
+```{r}
+## Check the number of cells per sample
+original = table(PBMC.HBsAG$Sample)
+original
+```
+Violin plot per Sample
+```{r fig.width=20, fig.height=12}
+DefaultAssay(PBMC.HBsAG) <- "RNA"
+Idents(PBMC.HBsAG) <- "Sample"
+
+Seurat::VlnPlot(object = PBMC.HBsAG, layer = "counts", 
+                features = c("nFeature_RNA","nCount_RNA"), ncol = 2, 
+                pt.size = 0.1, raster=FALSE, alpha = 0.5) & theme(plot.title = element_text(size=20)) + NoLegend()
+Seurat::VlnPlot(object = PBMC.HBsAG, layer = "counts", 
+                features = c("percent.mt", "percent.rb"), ncol = 2, 
+                pt.size = 0.1, raster=FALSE, alpha = 0.5) & theme(plot.title = element_text(size=20)) + NoLegend()
+```
+You can also draw violin plots per condition.
+```{r fig.width=20, fig.height=12}
+Idents(PBMC.HBsAG) <- "HBsAg"
+Seurat::VlnPlot(object = PBMC.HBsAG, layer = "counts", 
+                features = c("nFeature_RNA","nCount_RNA", "percent.mt", "percent.rb"), ncol = 4, 
+                pt.size = 0.1, raster=FALSE, alpha = 0.1) & theme(plot.title = element_text(size=20)) + NoLegend()
+```
+
+### Filter out dead cells with more than 20% of mitochondrial counts
+```{r}
+## Select the cells that you wish to filter out, and subset the Seurat object
+selected <- WhichCells(PBMC.HBsAG, expression = percent.mt > 20)
+PBMC.HBsAG.filtered <- subset(PBMC.HBsAG, cells = setdiff(WhichCells(PBMC.HBsAG), selected))
+ 
+## Check the number of cells per sample
+filter1 = table(PBMC.HBsAG.filtered$Sample)
+filter1
+
+## Number of removed cells
+length(selected)
+```
+
+#### Take a look at the `percent.mt` plot. What is the maximum value now?
+```{r fig.width=20, fig.height=12}
+Idents(PBMC.HBsAG.filtered) <- "Sample"
+
+Seurat::VlnPlot(object = PBMC.HBsAG.filtered, layer = "counts", 
+                features = c("nFeature_RNA","nCount_RNA"), ncol = 2, 
+                pt.size = 0.1, raster=FALSE, alpha = 0.5) & theme(plot.title = element_text(size=20)) + NoLegend()
+Seurat::VlnPlot(object = PBMC.HBsAG.filtered, layer = "counts", 
+                features = c("percent.mt", "percent.rb"), ncol = 2, 
+                pt.size = 0.1, raster=FALSE, alpha = 0.5) & theme(plot.title = element_text(size=20)) + NoLegend()
+```
+
+### Filter out cells with low quality or empty droplets
+```{r}
+## Select the cells that you wish to filter out, and subset the Seurat object
+selected <- WhichCells(PBMC.HBsAG.filtered, expression = nFeature_RNA < 600)
+PBMC.HBsAG.filtered <- subset(PBMC.HBsAG.filtered, cells = setdiff(WhichCells(PBMC.HBsAG.filtered), selected))
+ 
+## Check the number of cells per sample
+filter2 = table(PBMC.HBsAG.filtered$Sample)
+filter2
+
+## Number of removed cells
+length(selected)
+```
+
+#### Check out the lower end of violins in `nFeature_RNA`.
+```{r fig.width=20, fig.height=12}
+Idents(PBMC.HBsAG.filtered) <- "Sample"
+
+Seurat::VlnPlot(object = PBMC.HBsAG.filtered, layer = "counts", 
+                features = c("nFeature_RNA","nCount_RNA"), ncol = 2, 
+                pt.size = 0.1, raster=FALSE, alpha = 0.5) & theme(plot.title = element_text(size=20)) + NoLegend()
+Seurat::VlnPlot(object = PBMC.HBsAG.filtered, layer = "counts", 
+                features = c("percent.mt", "percent.rb"), ncol = 2, 
+                pt.size = 0.1, raster=FALSE, alpha = 0.5) & theme(plot.title = element_text(size=20)) + NoLegend()
+```
+
+### Filter out cells with doublets
+```{r}
+## Select the cells that you wish to filter out, and subset the Seurat object
+selected <- WhichCells(PBMC.HBsAG.filtered, expression = nFeature_RNA > 4000)
+PBMC.HBsAG.filtered <- subset(PBMC.HBsAG.filtered, cells = setdiff(WhichCells(PBMC.HBsAG.filtered), selected))
+ 
+## Check the number of cells per sample
+filter3 = table(PBMC.HBsAG.filtered$Sample)
+filter3
+
+## Number of removed cells
+length(selected)
+```
+
+#### Check out the upper end of violins in `nFeature_RNA`.
+```{r fig.width=20, fig.height=12}
+Idents(PBMC.HBsAG.filtered) <- "Sample"
+
+Seurat::VlnPlot(object = PBMC.HBsAG.filtered, layer = "counts", 
+                features = c("nFeature_RNA","nCount_RNA"), ncol = 2, 
+                pt.size = 0.1, raster=FALSE, alpha = 0.5) & theme(plot.title = element_text(size=20)) + NoLegend()
+Seurat::VlnPlot(object = PBMC.HBsAG.filtered, layer = "counts", 
+                features = c("percent.mt", "percent.rb"), ncol = 2, 
+                pt.size = 0.1, raster=FALSE, alpha = 0.5) & theme(plot.title = element_text(size=20)) + NoLegend()
+```
+
+### The number of cells throughout the QC steps
+Construct a dataframe that contains the number of cells throughout the QC steps, using the variables we saved along the way (i.e. `original`, `filter1`, `filter2`, and `filter3`).
+```{r}
+df = data.frame(original, filter1, filter2, filter3) %>% 
+  dplyr::rename(sample = Var1, original = Freq, filter1 = Freq.1, filter2 = Freq.2, filter3 = Freq.3) %>%
+  dplyr::select(sample, original, filter1, filter2, filter3)
+rownames(df) <- NULL
+```
+See the number of cells as a table.
+```{r fig.height=4}
+p <- gridExtra::tableGrob(df)
+gridExtra::grid.arrange(p)
+```
+
+Transform the dataframe that is suitable for plotting
+```{r fig.width = 12, fig.height=8}
+df.long = df %>% tidyr::pivot_longer(!sample, names_to = "stage", values_to = "number_of_cells")
+df.long$sample = factor(df.long$sample)
+df.long$stage = factor(df.long$stage, levels = c("original", "filter1", "filter2", "filter3"))
+```
+
+Then visualize it as a bar plot, 
+```{r fig.width = 12, fig.height=8}
+ggplot(df.long, aes(x = stage, y = number_of_cells, fill = sample)) + 
+  geom_bar(position="dodge", stat = "identity") 
+```
+
+Or as a stacked bar plot.
+```{r fig.width = 12, fig.height=8}
+ggplot(df.long, aes(x = stage, y = number_of_cells, fill = sample)) + 
+  geom_bar(position="stack", stat = "identity") 
+```
+
+```{r}
+## Clean environment
+rm(PBMC.HBsAG, samples_data)
+gc()
+```
+
+## Normalize and (Log)Transform the data
+Now that we are left with only high quality cells, we can now begin with downstream analysis. Let us standardize (or scale) and log transform the data.
+```{r}
+PBMC.HBsAG.filtered <- NormalizeData(PBMC.HBsAG.filtered, normalization.method = "LogNormalize", scale.factor = 10000)  
+```
+
+### RLE (Relative Log Expression) plot
+To visualize the effect of normalization, we calculate Relative [Log Expression (RLE)](https://www.ncbi.nlm.nih.gov/pmc/articles/PMC5798764/) for randomly sampled 100 cells of a sample.
+For each gene, calculate its median expression across all cells, then calculate the deviations from this median. Generate a boxplot of all the deviations for that sample. 
+```{r fig.width=20, fig.height=12}
+## Before Normalization $counts
+m = PBMC.HBsAG.filtered[["RNA"]]$counts.GSM7887145_PBMC10
+m = m[,sample(ncol(m), 100)]
+mn  <- apply(m, 1, median) # median per gene/row 
+med_dev <- data.frame(sweep(m, MARGIN=1, STATS=mn, FUN='-')) # median deviation
+boxplot(med_dev)
+
+### After Normalization $data
+m = PBMC.HBsAG.filtered[["RNA"]]$data.GSM7887145_PBMC10
+m = m[,sample(ncol(m), 100)]
+mn  <- apply(m, 1, median)
+med_dev <- data.frame(sweep(m, MARGIN=1, STATS=mn, FUN='-'))
+boxplot(med_dev)
+```
+
+## Dimensionality of data
+To remove noise from the data and extract biologically meaningful information, we select 2000 highly variable genes and 30 principal components. This reduced dimension will be used for clustering and visualizing the clusters using UMAP.
+
+### Highly Variable Genes (HVGs)
+Detect Highly Variable Genes (HVGs) using Variance Stabilizing Transformation (VST). First, it fits a line to the relationship of log(variance) and log(mean) using local polynomial regression (loess). Then standardizes the feature values using the observed mean and expected variance (given by the fitted line). Feature variance is then calculated on the standardized values after clipping to a maximum (see clip.max parameter).
+```{r}
+PBMC.HBsAG.filtered <- Seurat::FindVariableFeatures(PBMC.HBsAG.filtered, nfeatures = 2000, 
+                                              selection.method = "vst", loess.span = 0.3, clip.max = "auto")
+```
+
+Access HVGs information to label datapoints in the plot. Order HVGs in the decreasing `variance.standardized` value and select top 20 genes to label datapoints in the plot.
+```{r fig.width=20, fig.height=12}
+hvg <- Seurat::VariableFeatures(object = PBMC.HBsAG.filtered)
+top20 <- Seurat::HVFInfo(PBMC.HBsAG.filtered)[hvg,] %>% dplyr::arrange(desc(variance.standardized)) %>% head(20) %>% rownames()
+
+p1 <- Seurat::VariableFeaturePlot(PBMC.HBsAG.filtered)
+LabelPoints(plot = p1, 
+            points = top20, 
+            repel = TRUE, xnudge = 0, ynudge = 0)
+```
+
+### Scale and center the data
+Scale and center the data prior to dimension reduction. Default behavior is to scale only on variable genes. The resulting scaled data is saved in `@assays$RNA$scale.data`.
+```{r}
+PBMC.HBsAG.filtered <- Seurat::ScaleData(PBMC.HBsAG.filtered, features = hvg)
+
+## If you wish to use all genes for scaling.
+# all.genes <- rownames(PK_PBMC.filtered)
+# PK_PBMC.filtered <- ScaleData(PK_PBMC.filtered, features = all.genes)
+```
+
+### Principal Component Analysis (PCA)
+Perform PCA and check out the loadings of each PC.
+```{r fig.width=12, fig.height=8}
+# By default, use 2000 most variable genes for PCA
+PBMC.HBsAG.filtered <- Seurat::RunPCA(PBMC.HBsAG.filtered, features = hvg)
+```
+
+Visualize the first and the second PCs. Linear transformation does not represent our data well.
+```{r fig.width=12, fig.height=8}
+Seurat::DimPlot(PBMC.HBsAG.filtered, reduction = "pca", raster = FALSE)
+```
+
+### Variance explained
+Draw a scree plot to see how much variance of the data is explained by each PC. `Seurat::ElbowPlot` draws it using standard deviations of PCs.
+```{r fig.width=12, fig.height=8}
+Seurat::ElbowPlot(PBMC.HBsAG.filtered, ndims = 50)
+```
+
+(Optional) Calculate variance explained and draw a scree plot of the variance explained for the first 50 PCs.
+When looking at the 50 Principal Components (PCs), the first 12 PCs explain 80.02% of the data; nPC=18 85.28%; nPC=26 90.43%.
+```{r}
+mat <- Seurat::GetAssayData(PBMC.HBsAG.filtered, assay = "RNA", layer = "scale.data")
+pca <- PBMC.HBsAG.filtered[["pca"]]
+total_variance <- sum(matrixStats::rowVars(mat))
+eigValues <- (pca@stdev)^2  
+varExplained <- eigValues / total_variance
+
+varExplained.pct <- varExplained*100/sum(varExplained)
+cumulative.proportion <- round(cumsum(varExplained.pct),2)
+# round(cumsum(eigValues / sum(eigValues))[1:20]*100, 3)
+
+# npc = number of PC, diff = difference in SD values of the previous nPC and the current.
+df = data.frame(PC = seq(1:50),
+           sd = pca@stdev,
+           VarExplained = varExplained.pct,
+           CumulProportion = cumulative.proportion
+)
+
+head(df,30)
+```
+```{r fig.width=12, fig.height=8}
+ggplot2::ggplot(data = df, aes(x=reorder(PC, -VarExplained, group = 1))) +
+  geom_bar(aes(y=VarExplained), stat = "identity", fill = "orange") + 
+  geom_point(aes(y=CumulProportion), group = 1, color = "darkblue") + 
+  geom_line(aes(y=CumulProportion), group = 1, color = "darkblue") + 
+  scale_y_continuous("Variance Explained (%)", sec.axis = sec_axis(~ . * 1, name = "Cumulative Proportion of Variance Explained (%)")) +
+  labs(title = "Scree plot (50 Principal Components)", x = "Principal Component (PC)") + 
+  geom_hline(yintercept=c(80, 90), linetype="dashed", color = "tomato3") + theme_bw()
+```
+
+```{r}
+## Clean environment
+rm(m, mat, med_dev, pca, p1, p, mn)
+gc()
+```
+
+## Before Integration
+
+### Graph-based Clustering
+Construct a graph using kNN (k-nearest neighbors), and compute SNN (shared nearest neighbors) using Jaccard index of the neighborhood overlap between every cell and its kNN.
+```{r}
+PBMC.HBsAG.filtered <- Seurat::FindNeighbors(PBMC.HBsAG.filtered, reduction = "pca", dims = 1:10)
+```
+
+Cluster the communities by optimizing the modularity function. Check out parameter options by running `??FindClusters` on the Console and then reading what's in the Help.
+```{r}
+PBMC.HBsAG.filtered <- Seurat::FindClusters(PBMC.HBsAG.filtered, cluster.name = "unintegrated_clusters", resolution = 1, algorithm = 1)
+```
+
+### Visualizing Clusters using UMAP
+To visualize data structure, let's generate UMAP reduced dimensionality representation of the integrated data.
+```{r}
+PBMC.HBsAG.filtered <- Seurat::RunUMAP(PBMC.HBsAG.filtered, dims = 1:30, reduction = "pca", reduction.name = "umap.unintegrated")
+```
+
+```{r fig.width=12, fig.height=8}
+Seurat::DimPlot(PBMC.HBsAG.filtered, reduction = "umap.unintegrated", 
+                group.by = "unintegrated_clusters", raster=FALSE)
+```
+
+#### Examine the difference between PCA and UMAP before integrating the 18 samples' data sets.
+```{r fig.width=12, fig.height=8}
+Seurat::DimPlot(PBMC.HBsAG.filtered, reduction = "umap.unintegrated", group.by = c("HBsAg"), raster=FALSE)
+Seurat::DimPlot(PBMC.HBsAG.filtered, reduction = "pca", group.by = "HBsAg", raster=FALSE)
+```
+
+## After Integtation
+### Integration 
+Integration of the 4 samples' data sets took me more than 30 minutes on the CBBI server (and 13 hours for the original 18 samples). So in this practical, we are going to load the already integrated data set instead. This will take about a minute.
+```{r}
+#### DO NOT RUN ####
+
+# ## Integration
+# PBMC.HBsAG.integrated <- Seurat::IntegrateLayers(
+#   object = PBMC.HBsAG.filtered, method = CCAIntegration,
+#   orig.reduction = "pca", new.reduction = "integrated.cca",
+#   verbose = FALSE
+# )
+# 
+# ## Save the integrated object
+# saveRDS(PBMC.HBsAG.integrated, file = paste0(ddir, "/PBMC.HBsAG.integrated.4samples.rds"))
+```
+
+```{r}
+## Load the integrated object 
+PBMC.HBsAG.integrated <- readRDS(file = paste0(ddir, "/PBMC.HBsAG.integrated.4samples.rds"))
+PBMC.HBsAG.integrated
+```
+#### See how many layers do we have in the Seurat Object after applying JoinLayers.
+```{r}
+## re-join layers after integration : can do this before/after integrative analysis & but def should be done before DEA
+PBMC.HBsAG.integrated <- SeuratObject::JoinLayers(PBMC.HBsAG.integrated)
+PBMC.HBsAG.integrated
+```
+```{r}
+## Clean environment
+rm(PBMC.HBsAG.filtered)
+PBMC.HBsAG.integrated@reductions$umap.unintegrated <- NULL
+gc()
+```
+
+### Graph-based Clustering 
+#### How many clusters are formed by using resolution 1? Does it show the same number of clusters before and after integration?
+```{r}
+PBMC.HBsAG.integrated <- Seurat::FindNeighbors(PBMC.HBsAG.integrated, reduction = "integrated.cca", dims = 1:30) 
+PBMC.HBsAG.integrated <- Seurat::FindClusters(PBMC.HBsAG.integrated, cluster.name = "integrated_clusters", resolution = 1, algorithm = 1)
+```
+
+### Visualizing Clusters using UMAP 
+To visualize data structure, let's generate UMAP reduced dimensionality representation of the integrated data.
+```{r}
+PBMC.HBsAG.integrated <- Seurat::RunUMAP(PBMC.HBsAG.integrated, dims = 1:30, 
+                                         reduction = "integrated.cca", 
+                                         reduction.name = "umap.integrated")
+```
+
+```{r fig.width=12, fig.height=8}
+Seurat::DimPlot(PBMC.HBsAG.integrated, reduction = "umap.integrated", 
+                group.by = c("integrated_clusters"), raster=FALSE)
+```
+
+#### Examine the difference between PCA and UMAP of the integrated data.
+```{r fig.width=12, fig.height=8}
+Seurat::DimPlot(PBMC.HBsAG.integrated, reduction = "umap.integrated", 
+                group.by = c("HBsAg"), raster=FALSE)
+Seurat::DimPlot(PBMC.HBsAG.integrated, reduction = "pca", 
+                group.by = c("HBsAg"), raster=FALSE)
+```
+
+### Visualize clustering result on UMAP
+```{r fig.width=20, fig.height=8}
+Seurat::DimPlot(PBMC.HBsAG.integrated, reduction = "umap.integrated", group.by = "integrated_clusters", label = T, repel = T, raster = FALSE) + theme(legend.position = "bottom")
+```
+
+#### (Optional) t-distributed Stochastic Neighbor Embedding
+The main idea between t-SNE and UMAP are similar: project the original data with a high-dimensionality to a low-dimension (i.e. 2D, 3D) while preserving the pairwise similarities between data points in a lower-dimensional space.
+
+The difference between the two is that t-SNE moves every single point in a low-dimensional space a little bit each iteration. UMAP moves just one point, or a small subset of points, each time and this helps it scale well with super big datasets. Hence UMAP takes less time to be completed compared to t-SNE.
+```{r}
+# start.time <- Sys.time()
+# PBMC.HBsAG.integrated <- Seurat::RunTSNE(PBMC.HBsAG.integrated, dims = 1:30, reduction = "integrated.cca", tsne.method = "Rtsne", reduction.name = "tsne.integrated")
+# end.time <- Sys.time()
+# time.taken <- round(end.time - start.time, 2)
+# time.taken
+# PBMC.HBsAG.integrated
+```
+
+### (Optional) Try out different resolution values i.e. 0.5 and 2 and visualize how they differ.
+```{r}
+# test1 <- Seurat::FindClusters(PBMC.HBsAG.integrated, cluster.name = "integrated_clusters", resolution = 0.5, algorithm = 1)
+# Seurat::DimPlot(test1, reduction = "umap.integrated", group.by = c("integrated_clusters"))
+# 
+# test2 <- Seurat::FindClusters(PBMC.HBsAG.integrated, cluster.name = "integrated_clusters", resolution = 2, algorithm = 1)
+# Seurat::DimPlot(test2, reduction = "umap.integrated", group.by = c("integrated_clusters"))
+```
+
+```{r}
+## Clean environment
+# rm(test1, test2)
+```
+
+## Manual Cell Type Identification
+For marker gene identification, we do not use the integrated data. Make sure to use RNA assay (i.e. original counts and not the reduced dimensions), all layers (i.e. samples) joined as one matrix.
+```{r}
+# JoinLayers if not already
+PBMC.HBsAG.integrated
+
+# Check if we have the correct DefaultAssay and Idents
+DefaultAssay(PBMC.HBsAG.integrated) <- "RNA"
+Idents(PBMC.HBsAG.integrated) <- "integrated_clusters"
+```
+
+### Identify marker genes for each cluster 
+How do we connect the clusters of cells to biological meanings? What are the genes that define each cluster? We can identify genes for each cluster by differential expression analysis (DEA). The identified genes can be used for manual annotation of the clusters, or examining qualitative differences of clusters that are annotated by an automated cell identification method.
+
+There are 3 functions from Seurat for DEA, FindAllMarkers, FindMarkers, and FindConservedMarkers. FindAllMarkers is an iterative function that compares each cluster to the rest. It takes too long to identify the markers for all clusters, hence we will identify markers only for cluster 0 in this practical.
+
+**Parameters in the FindAllMarkers** \
+Some options for the parameters are as follows. Please read the details by running `??FindAllMarkers` on the Console.  \
+ * **test.use** = wilcox, wilcox_limma, bimod, roc, t, negbinom, poisson, LR, MAST, DESeq2 \
+ * **only.pos** = TRUE only return positive markers (FALSE by default) \
+ * **logfc.threshold**: minimum log2 foldchange for average expression of gene in cluster relative to the average expression in all other clusters combined. Default is 0.25. If you set it too high, it is possible to miss those cell markers that are expressed in a small fraction of cells within the cluster of interest, but not in the other clusters. \
+ * **min.diff.pct**: minimum percent difference between the percent of cells expressing the gene in the cluster and the percent of cells expressing gene in all other clusters combined. \
+ * **min.pct**: only test genes that are detected in a minimum fraction of cells in either of the two populations. Meant to speed up the function by not testing genes that are very infrequently expressed. Default is 0.1. \
+```{r}
+#### DO NOT RUN ####
+
+# dge <- FindAllMarkers(PBMC.HBsAG.integrated, only.pos = T, min.pct = 0.15, logfc.threshold = 0.6, test.use = "wilcox", assay = "RNA")
+# write.csv(dge, file = "EMC_10X_PBMC_DGEs_clusters.csv")
+# markers <- dge %>% mutate(diff = pct.1 - pct.2) %>% filter(p_val_adj < 0.05) %>% group_by(cluster) %>% slice_max(order_by = avg_log2FC, n = 10) %>% arrange(cluster, desc(diff))
+```
+
+```{r}
+## Find makers for cluster 0
+dge.0 <- Seurat::FindMarkers(PBMC.HBsAG.integrated, ident.1 = 0, ident.2 = NULL,  
+                             only.pos = T, min.diff.pct = 0.25, logfc.threshold = 0.25,
+                             test.use = "wilcox", assay = "RNA")
+```
+
+The following columns are included in the result: \
+ * **p_val** : p-value unadjusted for multiple hypothesis testing\
+ * **avg_log2FC** : log fold-change of the average expression between the two groups. Positive values indicate that the feature is more highly expressed in the first group.\
+ * **pct.1** : The percentage of cells where the feature is detected in the first group.\
+ * **pct.2** : The percentage of cells where the feature is detected in the second group.\
+ * **p_val_adj** : Adjusted p-value, based on Bonferroni correction using all features in the dataset.\
+
+When looking at the output, we suggest looking at the genes with both large difference between `pct.1` and `pct.2` as well as large `avg_log2FC`. A column `diff` is added by subtracting `pct.2` from `pct.1` so we can order the DE genes that are expressed high percentage of cells in the cluster 0 but expressed low percentages in the rest of the cells.
+```{r}
+## Top 10 significant genes for cluster 0 by the average log fold change values.
+markers.0 <- dge.0 %>% dplyr::mutate(diff = pct.1 - pct.2) %>% 
+  dplyr::filter(p_val_adj < 0.05) %>% 
+  dplyr::arrange(desc(diff), desc(avg_log2FC))
+head(markers.0)
+```
+
+### Identifying conserved cluster markers across conditions
+Since we have samples representing two conditions, we will use FindConservedMarkers function to identify cluster markers. The function identifies only those genes that are specific to a cluster and expressed in both conditions. It internally separates cells per condition then performs DEA for a cluster against all other clusters. The lists of DE genes for each condition are then combined and returned. 
+```{r}
+## Find makers that are conserved for both conditions for cluster 0 
+conserved.0 <- Seurat::FindConservedMarkers(PBMC.HBsAG.integrated, ident.1 = 0, ident.2 = NULL, 
+                                            grouping.var = "HBsAg", 
+                                            only.pos = T, min.diff.pct = 0.25, logfc.threshold = 0.25,
+                                            test.use = "wilcox", assay = "RNA")
+
+```
+The results data frame has the aforementioned columns per condition and the following additional columns:\
+ * **max_pval**: the largest p-value of p-value calculated by each group/condition \
+ * **minimump_p_val**: combined p-value
+```{r}
+head(conserved.0)
+```
+
+### Let's compare the two methods: FindConservedMarkers and FindMarkers. 
+#### How many DE genes are identified by each method? 
+```{r}
+dim(markers.0)[1]
+dim(conserved.0)[1]
+```
+#### Are top 20 significant genes identical? 
+```{r}
+top20.0 <- markers.0 %>% dplyr::slice_head(n = 20) %>% rownames()
+top20.conserved.0 <- conserved.0 %>% dplyr::slice_head(n = 20) %>% rownames()
+
+intersect(top20.0, top20.conserved.0)
+```
+#### If not, what are the differences?
+```{r}
+union(top20.0, top20.conserved.0)[ union(top20.0, top20.conserved.0) %notin% intersect(top20.0, top20.conserved.0) ]
+```
+
+### FeaturePlot
+Once we identified cluster markers for cluster 0, plotting their expression level using FeaturePlot and DotPlot, and see if the results match your knowledge. 
+
+Let's check out expression level of the 10 marker genes for the cluster 0. The FeaturePlot function shows scaled average expression for each gene on UMAP space by the colored gradient. Check the location of cluster 0 in the previous UMAP. We can see that the 10 genes' expressions are mainly concentrated in the cluster 0. Since we split the plot by the level of HBsAg, we can also compare the expression of the gene in each condition. The markers seem indeed conserved in both conditions.
+```{r fig.width=18, fig.height=30}
+Seurat::FeaturePlot(PBMC.HBsAG.integrated, features = top20.conserved.0[1:5], 
+                    reduction = "umap.integrated", slot = "data", 
+                    keep.scale = "all", min.cutoff = "q10", order = T, split.by = "HBsAg")
+```
+
+#### Let's check the expression of negative control OR4F5 (Olfactory Receptors) and positive control GAPDH (a housekeeping gene)
+If you are unsure whether the gene name of your interest exists in our data, you can check if there is a matching pattern like this. Return all gene names that starts with OR. You can perhaps try with `"^CD"` as well.
+```{r}
+rownames(PBMC.HBsAG.integrated)[grep("^OR", rownames(PBMC.HBsAG.integrated))]
+```
+
+```{r fig.width=16, fig.height=8}
+Seurat::FeaturePlot(PBMC.HBsAG.integrated, features = c("OR4F5", "GAPDH"), reduction = "umap.integrated", slot = "data", keep.scale = "all", min.cutoff = "q10", order = T, split.by = "HBsAg")
+```
+
+### DotPlot
+Compare the identified markers for cluster 0 to the list of known markers on the [Azimuth human PBMC website](https://azimuth.hubmapconsortium.org/references/#Human%20-%20PBMC) (Azimuth References > Human - PBMC > Annotation Details: celltype.l2) Which label (cell type) have the most overlap with our result? Can you identify the cell type of cluster 0? Plot both the identified markers and the markers from Azimuth reference as a dot plot. The size of dot shows how many cells in the cluster are expressing the gene, and the color gradient shows the scaled expression level of the gene. 
+
+#### How many genes overlap between the cluster 0 markers and the known NK cell markers?
+```{r}
+CD56dim.NK = c("GNLY", "TYROBP", "NKG7", "FCER1G", "GZMB", "TRDC", "PRF1", "FGFBP2", "SPON2", "KLRF1")
+intersect(CD56dim.NK, top20.conserved.0)
+```
+Note that markers may bleed over between closely-related groups - they are not forced to be specific to only one group. You might want to re-cluster at a optimal resolution to reduce such possibility.
+```{r fig.width=20, fig.height=14}
+Seurat::DotPlot(PBMC.HBsAG.integrated, features = CD56dim.NK) + 
+  ggplot2::labs(title = "Azimuth human PBMC NK cell markers")
+```
+
+```{r fig.width=20, fig.height=14}
+Seurat::DotPlot(PBMC.HBsAG.integrated, features = top20.conserved.0) + 
+  ggplot2::labs(title = "Top 20 conserved markers for cluster 0")
+```
+
+### Assign the cell type name to the cluster
+Finally, we can now relabel the cluster by their cell type name. 
+```{r}
+Idents(PBMC.HBsAG.integrated) <- "integrated_clusters"
+table(Idents(PBMC.HBsAG.integrated))
+```
+
+```{r}
+new.cluster.ids <- c("NK")
+names(new.cluster.ids) <- "0"
+PBMC.HBsAG.integrated <- RenameIdents(PBMC.HBsAG.integrated, new.cluster.ids)
+PBMC.HBsAG.integrated$integrated_clusters <- Idents(PBMC.HBsAG.integrated)
+table(Idents(PBMC.HBsAG.integrated))
+```
+
+## Automated Cell Type Identification 
+As you can see, manually identifying cell type identities for each cluster is a laborious task and inherently subjective. It is most likely that you would repeat clustering, identifying markers for each cluster by DEA, and then identifying cell type by visualizing expression of markers using FeaturePlot and DotPlot. To deal with the challenge, automated annotation methods are available. It is very important to have a high quality reference data set (i.e. single-cell RNA-seq data with annotation) that can be correlated to your data. We will use reference mapping method called [Azimuth](https://azimuth.hubmapconsortium.org/) to correlate our expression data to their human PBMC reference, and transfer the labels (i.e. cell types) to our data. In fact, Azimuth leverages a 'reference-based mapping' pipeline that inputs a counts matrix of our query data and performs normalization, and cell annotation using an annotated reference data set. 
+
+When using automatic cell type identification tools, it is crucial to find a reference that is 1) the same species and organ 2) preferably the same technology 3) includes some of the expected cell types. Here are some resources for public single-cell RNA-seq data sets.
+https://bioconductor.org/packages/release/data/experiment/vignettes/celldex/inst/doc/userguide.html
+https://bioconductor.org/packages/3.18/data/experiment/vignettes/scRNAseq/inst/doc/scRNAseq.html
+
+Please run Azimuth to perform automated cell type annotation using human PBMC reference. 
+```{r}
+PBMC.HBsAG.integrated <- Azimuth::RunAzimuth(PBMC.HBsAG.integrated, reference = "pbmcref", assay  = "RNA")
+```
+
+Examine the additional columns in `@meta.data`. There are 3 resolution levels of cell type annotation `predicted.celltype.l1`, `predicted.celltype.l2` and `predicted.celltype.l3`, as well as corresponding mapping scores between our query data and the reference.
+```{r}
+head(PBMC.HBsAG.integrated@meta.data)
+```
+
+Let's check how many cells that were assigned as 0 / NK during manual annotation correspond to the automated annotation results. 
+```{r}
+table(PBMC.HBsAG.integrated$integrated_clusters, PBMC.HBsAG.integrated$predicted.celltype.l2)["NK",]
+```
+
+Visualize the identified cell types on UMAP space. 
+```{r fig.width=20, fig.height=14}
+Seurat::DimPlot(PBMC.HBsAG.integrated, reduction = "umap.integrated", 
+                group.by = c("predicted.celltype.l1"), label = T, repel = T, raster=FALSE) + theme(legend.position = "bottom")
+Seurat::DimPlot(PBMC.HBsAG.integrated, reduction = "umap.integrated", 
+                group.by = c("predicted.celltype.l2"), label = T, repel = T, raster=FALSE) + theme(legend.position = "bottom")
+Seurat::DimPlot(PBMC.HBsAG.integrated, reduction = "umap.integrated", 
+                group.by = c("predicted.celltype.l3"), label = T, repel = T, raster=FALSE) + theme(legend.position = "bottom")
+```
+
+### Validate the annotation result by expression of marker genes
+DotPlot using the Azimuth markers and the conserved markers for cluster 0.
+```{r fig.width=20, fig.height=12}
+Idents(PBMC.HBsAG.integrated) <- "predicted.celltype.l2"
+Seurat::DotPlot(PBMC.HBsAG.integrated, features = CD56dim.NK) + 
+  ggplot2::labs(title = "Azimuth human PBMC NK cell markers")
+Seurat::DotPlot(PBMC.HBsAG.integrated, features = top20.conserved.0) + 
+  ggplot2::labs(title = "Top 20 conserved markers for cluster 0")
+```
+
+Visualize gene expression of the markers using Violin plot
+```{r fig.width=20, fig.height=26}
+Idents(PBMC.HBsAG.integrated) <- "predicted.celltype.l2"
+Seurat::VlnPlot(PBMC.HBsAG.integrated, features = top20.conserved.0[1:6], layer = "data", ncol = 2) 
+```
+
+### Relative proportion of cells per cluster - HBsAg level
+To see quantitative difference across the cell types, we can plot a bar graph based on the number of cells of a cell type.
+
+#### What is the percentage of it out of all the cells in the sample? Which cell types show quantitative difference depending on the HBsAG levels? 
+
+CD8 TEM and NK cells types have higher percentage in the HBsAg low condition compared to the HBsAg high.
+```{r fig.width=20, fig.height=12}
+df.lst = list(table(PBMC.HBsAG.integrated$predicted.celltype.l2, PBMC.HBsAG.integrated$HBsAg)) 
+# df.lst %>% data.frame() %>% dplyr::rename(cluster = Var1, sample = Var2)  %>% group_by(sample) %>% mutate(sum_sample = sum(Freq), Relative_Proportion = round((Freq*100)/sum_sample,2)) #%>% summarize(n = sum(Relative_Proportion))
+
+for (x in df.lst) {
+  df = data.frame(x) %>% dplyr::rename(cluster = Var1, sample = Var2)  %>% dplyr::group_by(sample) %>% dplyr::mutate(sum_sample = sum(Freq), Relative_Proportion = round((Freq*100)/sum_sample,2)) %>% dplyr::select(cluster, sample, Relative_Proportion)
+  df.long = reshape2::melt(df, id=c('cluster', 'sample'))
+  names(df.long)[4] <- "Relative_Proportion"
+  p = ggplot2::ggplot(df.long, aes(x = cluster, y = Relative_Proportion, fill = sample)) + 
+    geom_bar(position="dodge", stat = "identity") + theme_bw() +
+    theme(axis.text.x = element_text(angle = 40, vjust=1, hjust=1, size=rel(1.5)), text = element_text(size=13), 
+          legend.position = "top", plot.title = element_text(hjust = 0.5)) + 
+    labs(x = "Cluster", y = "Relative Proportion (%)", title = "Proportion of Cells in each Cluster")
+  plot(p) 
+}
+```
+
+## Compare NK cluster with the KLRC2+ NCAM1 low NK cell cluster from the original paper
+> "In the blood of HBV-infected patients on NUC, the proportion of KLRC2+ adaptive natural killer (NK) cells was signiﬁcantly lower in the HBsAg-high group and, remarkably, both KLRC2+ NK and KLRG1+ CD8 T cells display enrichment of lymphocyte activation-associated gene sets in the HBsAg-low group."
+
+#### Can you see less NK cells in the HBsAG high condition compared to HBsAG low condition? 
+```{r fig.width=20, fig.height=12}
+Seurat::DimPlot(PBMC.HBsAG.integrated, reduction = "umap.integrated", group.by = c("predicted.celltype.l2"), split.by = "HBsAg", label = T, repel = T, raster = FALSE) + theme(legend.position = "bottom")
+```
+
+Relative proportion of NK cells amongst all cells per sample does not show significant difference between the two groups, unlike Fig. 1. B. Perhaps we need deeper level than `predicted.celltype.l2`. `predicted.celltype.l3` contains NK_1, NK_2, NK_3, NK_4.
+```{r fig.width=12, fig.height=8}
+## Calculate relative proportion of clusters per sample
+df.lst = PBMC.HBsAG.integrated@meta.data %>% dplyr::select(Sample, predicted.celltype.l2) %>% table()
+df.lst = list(df.lst)[[1]]
+df = data.frame(df.lst) %>% dplyr::group_by(Sample) %>% dplyr::mutate(sum_sample = sum(Freq), Relative_Proportion = round((Freq*100)/sum_sample,2)) %>% dplyr::select(Sample, predicted.celltype.l2, Relative_Proportion)
+
+## Filter only NK cells
+df = df %>% dplyr::filter(predicted.celltype.l2 %in% "NK")
+
+## Add the HBsAg meta data 
+lookup.table = PBMC.HBsAG.integrated@meta.data %>% dplyr::select(Sample, HBsAg) %>% unique()
+df = df %>% dplyr::left_join(lookup.table, by="Sample")
+
+## plot
+ggplot2::ggplot(df, aes(x = HBsAg, y = Relative_Proportion, color = HBsAg, group = HBsAg)) + 
+    geom_violin() + #scale_color_manual(name = "HBsAg", values = sample.colors) + geom_jitter(color="black", size=0.4, alpha=0.9) +
+    theme(axis.text.x = element_text(angle = 40, vjust=1, hjust=1, size=rel(1.5)), text = element_text(size=13), plot.margin = unit(c(2,2,2,2), "cm"), legend.position = "top", panel.background = element_rect(fill = 'white', colour = NA), panel.border = element_rect(fill = NA, colour = 'grey20'), panel.grid.major = element_line(colour = 'grey70', linetype = 'dotted'), plot.title = element_text(hjust = 0.5)) + labs(x = "HBsAg Level", y = "Proportion among the total cells (%)", title = "Proportion of NK cells per sample") + ggpubr::stat_compare_means(comparisons = list(c("High", "Low")), label = "p.signif")
+
+```
+
+#### (Optional) Try with "predicted.celltype.l3".
+NK cells: low in high HBsAG group 
+KLRC+ NK, KLRG+ CD8 T : enriched in low HBsAG group 
+
+## DEA within the same cell type across conditions 
+If you want to find genes that are differentially expressed between the two conditions in the same cluster, you may add a columns with combination of the two annotations, namely cell type and condition, then apply FindMarkers function between the group of cells (NK_high vs. NK_low). DO NOT overinterpret the DEA result since the test treats each cell as a sample and overlook inherent correlation among the cells from a single donor.
+
+```{r}
+## Assign a new cell-level meta data by combining the cell type and condition
+PBMC.HBsAG.integrated$celltype.condition <- paste(PBMC.HBsAG.integrated$predicted.celltype.l2, PBMC.HBsAG.integrated$HBsAg, sep = "_")
+PBMC.HBsAG.integrated$celltype.condition <- factor(PBMC.HBsAG.integrated$celltype.condition, levels = names(table(PBMC.HBsAG.integrated$celltype.condition)))
+head(table(PBMC.HBsAG.integrated$celltype.condition))
+```
+
+```{r}
+## Identify DE genes between NK_high and NK_low
+Idents(PBMC.HBsAG.integrated) <- "celltype.condition"
+NK.condition <- Seurat::FindMarkers(PBMC.HBsAG.integrated, ident.1 = "NK_High", ident.2 = "NK_Low", 
+                            min.diff.pct = 0.01, logfc.threshold = 0.1,
+                             test.use = "wilcox", assay = "RNA")
+
+NK.condition %>% dplyr::mutate(diff = abs(pct.1 - pct.2)) %>% dplyr::filter(p_val_adj < 0.05, diff > 0.15) %>% dplyr::arrange(desc(abs(avg_log2FC))) %>% dplyr::slice_head(n = 10)
+```
+
+Feature plot and Dot plot with the identified top 2 DE genes between the two conditions for NK cells.
+```{r fig.width=20, fig.height=12}
+## Check expression values of the top 2 DE genes
+top2.NK <- NK.condition %>% dplyr::mutate(diff = abs(pct.1 - pct.2)) %>% dplyr::filter(p_val_adj < 0.05, diff > 0.15) %>% dplyr::arrange(desc(abs(avg_log2FC))) %>% dplyr::slice_head(n = 2) %>% rownames()
+
+Seurat::FeaturePlot(PBMC.HBsAG.integrated, features = top2.NK, reduction = "umap.integrated", slot = "data", keep.scale = "all", min.cutoff = "q10", order = T, split.by = "HBsAg") 
+Seurat::DotPlot(PBMC.HBsAG.integrated, features = top2.NK)
+```
+
+You can also use Violin plot for visualizing the log normalized data of the specific gene. However, the p-values obtained from this analysis should be interpreted with caution, because these tests treat each cell as an independent replicate and ignore inherent correlations between cells originating from the same sample. Such analyses have been shown to find a large number of false positive associations, as has been demonstrated by Squair et al., 2021, Zimmerman et al., 2021, Junttila et al., 2022, and others. [Pseudobulking](https://satijalab.org/seurat/articles/de_vignette#perform-de-analysis-after-pseudobulking) can be used to account for such within-sample correlation.
+
+```{r fig.width=20, fig.height=12}
+Seurat::VlnPlot(PBMC.HBsAG.integrated, features = top2.NK, layer = "data", group.by = "HBsAg", y.max = 5, raster = FALSE) & ggpubr::stat_compare_means(comparisons = list(c("High", "Low")), label = "p.signif")
+```
+
+#### (Optional) Identify markers for CD8 T 
+
+## Session info
+```{r}
+sessionInfo()
+```
+
